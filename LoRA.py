@@ -9,7 +9,7 @@ from transformers.pytorch_utils import Conv1D
 from huggingface_hub import hf_hub_download
 #from bitsandbytes import 
 from tortoise.utils.tokenizer import VoiceBpeTokenizer
-from trl import SFTTrainer
+#from trl import SFTTrainer
 from accelerate import Accelerator
 from datasets import load_dataset
 from dlas.utils import options as option
@@ -39,6 +39,16 @@ autoregressive_model_path = hf_hub_download(
   ".models/autoregressive.pth"
 )
 
+model_path = hf_hub_download(
+"jbetker/tortoise-tts-v2",
+".models/dvae.pth",
+revision="hf"
+)
+
+mel_norms_path = hf_hub_download(
+"jbetker/tortoise-tts-v2",
+"tortoise/data/mel_norms.pth",
+)
 class DL_LoRA:
     def __init__(self):
         print("begin init")
@@ -146,8 +156,7 @@ class DL_LoRA:
 
         self.model = self.accelerator.prepare(self.model)  # Wrap with Accelerate for distributed training
         self.model.print_trainable_parameters()
-        print("\n\nComplete\n\n")
-   
+
 
     def load_data(self):
         print("begin load")
@@ -182,20 +191,9 @@ class DL_LoRA:
         opt["datasets"]["val"]["path"] = [
         "/tmp/donald-trump-prepared-clips/validation.txt"
         ]
+
         file_path_train = "/tmp/donald-trump-prepared-clips/train.txt"
         file_path_validate = "/tmp/donald-trump-prepared-clips/validation.txt"
-
-        mel_norms_path = hf_hub_download(
-        "jbetker/tortoise-tts-v2",
-        "tortoise/data/mel_norms.pth",
-        )
-        #text train
-        #data= load_dataset("text", file_path_train, split="train")
-        #test= load_dataset("text", file_path_validate, split="test")
-        #data['validate'] = load_dataset(file_path_validate)
-        #data['train'] = data['train'].map(self.merge_columns)
-        #print(data['train']['prediction'][:5])
-        #data = data.map(lambda samples: self.tokenizer(samples['prediction']), batched=True)
 
         #notebook train
         opt["steps"]["gpt_train"]["injectors"]["paired_to_mel"]["mel_norm_file"] = mel_norms_path
@@ -207,20 +205,9 @@ class DL_LoRA:
         trainer.init(config_path, opt, launcher, mode)
 
         self.model.config.use_cache = False
-        #trainer = SFTTrainer(
-        #     model=self.model,
-        #     tokenizer=self.tokenizer,
-        #     train_dataset=data,
-        #     eval_dataset=test,
-        #     dataset_text_field="messages",
-        #     peft_config=self.model.peft_config,
-        #     packing=True, # pack samples together for efficient training
-        #     max_seq_length=1024,
-        #     args=training_arguments,
-        # )
-        # Start training
 
         trainer.do_training()
+        
         #trainer.train()
 
 
