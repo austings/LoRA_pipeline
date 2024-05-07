@@ -14,9 +14,9 @@ datasets:
   train:
     name: training
     n_workers: 4
-    batch_size: 128
+    batch_size: 64
     mode: paired_voice_audio
-    path: ./training/50-cent/train.txt
+    path: /tmp/donald-trump-prepared-clips/train.txt #./training/50-cent/train.txt
     fetcher_mode: ['lj']
     phase: train
     max_wav_length: 551250 # 25 seconds
@@ -33,7 +33,7 @@ datasets:
     n_workers: 4
     batch_size: 13
     mode: paired_voice_audio
-    path: ./training/50-cent/validation.txt
+    path: /tmp/donald-trump-prepared-clips/validation.txt #./training/50-cent/validation.txt
     fetcher_mode: ['lj']
     phase: val
     max_wav_length: 286715
@@ -117,11 +117,11 @@ networks:
 
 path:
   strict_load: true
-  pretrain_model_gpt: './models/tortoise/autoregressive.pth'
+  pretrain_model_gpt: './models/tortoise/autoregressive.pth' #tortoise_mods/pytorch_model.bin #
   # resume_state: ''
 
 train:
-  niter: 10000
+  niter: 10 #10000
   warmup_iter: -1
   mega_batch_factor: 4
   val_freq: 100

@@ -1,8 +1,10 @@
+import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 import torch
 from tortoise.api import UnifiedVoice
 from peft import PeftConfig, LoraModel, LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 import argparse
-import os
+
 from transformers import GPT2Config, GPT2PreTrainedModel, LogitsProcessorList, AutoModelForCausalLM, TFAutoModelForCausalLM,   TrainingArguments, BitsAndBytesConfig
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 from transformers.pytorch_utils import Conv1D
@@ -14,7 +16,9 @@ from accelerate import Accelerator
 from datasets import load_dataset
 from dlas.utils import options as option
 from dlas.train import Trainer
+import functools
 
+torch.cuda.empty_cache()
 MODELS_DIR = os.environ.get('TORTOISE_MODELS_DIR', os.path.realpath(os.path.join(os.getcwd(), './models/tortoise/')))
 MODELS = {
     'autoregressive.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/autoregressive.pth',
@@ -25,10 +29,8 @@ MODELS = {
     'vocoder.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/vocoder.pth',
     'rlg_auto.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/rlg_auto.pth',
     'rlg_diffuser.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/rlg_diffuser.pth',
-
     'bigvgan_base_24khz_100band.pth': 'https://huggingface.co/ecker/tortoise-tts-models/resolve/main/models/bigvgan_base_24khz_100band.pth',
     'bigvgan_24khz_100band.pth': 'https://huggingface.co/ecker/tortoise-tts-models/resolve/main/models/bigvgan_24khz_100band.pth',
-
     'bigvgan_base_24khz_100band.json': 'https://huggingface.co/ecker/tortoise-tts-models/resolve/main/models/bigvgan_base_24khz_100band.json',
     'bigvgan_24khz_100band.json': 'https://huggingface.co/ecker/tortoise-tts-models/resolve/main/models/bigvgan_24khz_100band.json',
 }
@@ -53,23 +55,23 @@ class DL_LoRA:
     def __init__(self):
         print("begin init")
         #initialize autoregressive
-        autoregressive = UnifiedVoice(
-            max_mel_tokens=604,
-            max_text_tokens=402,
-            max_conditioning_inputs=2,
-            layers=30,
-            model_dim=1024,
-            heads=16,
-            number_text_tokens=255,
-            start_text_token=255,
-            checkpointing=False,
-            train_solo_embeddings=False
-        )
-        autoregressive.load_state_dict(torch.load(autoregressive_model_path), strict=False)
-        autoregressive.post_init_gpt2_config(use_deepspeed=True, kv_cache=True)
+        #autoregressive = UnifiedVoice(
+        #    max_mel_tokens=604,
+        #    max_text_tokens=402,
+        #    max_conditioning_inputs=2,
+        #    layers=30,
+        #    model_dim=1024,
+        #    heads=16,
+        #    number_text_tokens=255,
+        #    start_text_token=255,
+        #    checkpointing=False,
+        #    train_solo_embeddings=False
+        #)
+        #autoregressive.load_state_dict(torch.load(autoregressive_model_path), strict=False)
+        #autoregressive.post_init_gpt2_config(use_deepspeed=True, kv_cache=True)
         #initialize tokenizer 
         self.load_tokenizer_json(None)
-        self.model =  self.freeze_weights(autoregressive)
+       
         self.accelerator = Accelerator()
 
     def load_tokenizer_json(self, tokenizer_json):
@@ -119,8 +121,8 @@ class DL_LoRA:
                 # cast the small parameters (e.g. layernorm) to fp32 for stability
                 param.data = param.data.to(torch.float32)
 
-        model.gpt.gradient_checkpointing_enable()  # reduce number of stored activations
-        model.gpt.enable_input_require_grads()
+        model.gradient_checkpointing_enable()  # reduce number of stored activations
+        model.enable_input_require_grads()
         return model
 
     def merge_columns(self, entry):
@@ -130,33 +132,9 @@ class DL_LoRA:
     def load_peft_lora(self):
         print("begin lora")
 
-        l_config = LoraConfig(
-            r = 16,
-            lora_alpha = 32,
-            lora_dropout = .05,
-            task_type = TaskType.CAUSAL_LM,
-            target_modules = [
-                "c_attn","c_proj","c_fc",
-            ]    
-        )
-
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True,
-        )   
-
-        # Load the Lora model
-        self.model.inference_model.save_pretrained("./tortoise_mod")
-        #base_model = 
-        # Prepare model for training with PEFT
-        self.model = prepare_model_for_kbit_training(AutoModelForCausalLM.from_pretrained("./tortoise_mod", ignore_mismatched_sizes=True))#, quantization_config=bnb_config))
-        print(list(set(self.get_specific_layer_names(self.model))))
-        self.model = get_peft_model(self.model, l_config)
-
-        self.model = self.accelerator.prepare(self.model)  # Wrap with Accelerate for distributed training
-        self.model.print_trainable_parameters()
-
+ 
+    def null_position_embeddings(self, range, dim):
+        return torch.zeros((range.shape[0], range.shape[1], dim), device=range.device)
 
     def load_data(self):
         print("begin load")
@@ -204,11 +182,38 @@ class DL_LoRA:
         mode = ""
         trainer.init(config_path, opt, launcher, mode)
 
-        self.model.config.use_cache = False
+        unified_voice = trainer.model.networks["gpt"].module
 
+        l_config = LoraConfig(
+            r = 16,
+            lora_alpha = 32,
+            lora_dropout = .05,
+            task_type = TaskType.CAUSAL_LM,
+            target_modules = [
+                "c_attn","c_proj","c_fc",
+            ]    
+        )
+
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+        )   
+
+        # Load the Lora model
+        gpt_model = unified_voice.gpt
+        gpt_model.wte = unified_voice.text_embedding
+        gpt_model.wpe = functools.partial(self.null_position_embeddings, dim=1024)
+        gpt_model =  self.freeze_weights(gpt_model)
+        gpt_model = get_peft_model(gpt_model, l_config)
+        gpt_model = self.accelerator.prepare(gpt_model)  # Wrap with Accelerate for distributed training
+        gpt_model.print_trainable_parameters()
+        gpt_model.config.use_cache = False
+        del gpt_model.base_model.model.wte
+        print(gpt_model)
         trainer.do_training()
-        
-        #trainer.train()
+        trainer.model.save(10)# niter in gpt_finetune.yml default is 10000
+        self.tokenizer.save_pretrained("./tortoise_complete")
 
 
 def main():
@@ -248,6 +253,21 @@ if __name__ == "__main__":
     #     data_collator=transformers.DataCollatorForLanguageModeling(tokenizer, mlm=False),
     # )
 
+        #gpt_model.wte = unified_voice.mel_embedding #unified_voice.text_embedding.emb #= torch.zeros() #del g
+        #gpt_model.resize_token_embeddings(len(self.tokenizer))
+        #gpt_model.wpe = unified_voice.text_pos_embedding.emb# functools.partial(torch.zeros((range.shape[0], range.shape[1], 1024), device=range.device))
+        #gpt_model.save_pretrained("./tortoise_mod")
+        #gpt_model = prepare_model_for_kbit_training(gpt_model)
+       
+        # Prepare model for training with PEFT
+        #AutoModelForCausalLM.register("new-model", unified_voice.gpt)
+        #AutoModelForCausalLM.register(unified_voice.gpt, unified_voice.gpt)
+        # gpt_model.save_pretrained("./tortoise_mod")
+        # gpt_model = prepare_model_for_kbit_training(AutoModelForCausalLM.from_pretrained("./tortoise_mod", ignore_mismatched_sizes=True))#, quantization_config=bnb_config))
+        #print(list(set(self.get_specific_layer_names(unified_voice.gpt))))
+        #print("\n\n")
+        #print(unified_voice.gpt)
+        #unified_voice.gpt = gpt_model
 
     #from ntortoise.clone.finetune import build_trainer, ValidatingTrainer
     # trainer = build_trainer(
