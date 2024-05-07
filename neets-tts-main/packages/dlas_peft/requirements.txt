@@ -1,0 +1,1 @@
+git+https://git.ecker.tech/mrq/DL-Art-School.git

@@ -1,0 +1,16 @@
+torch
+torchaudio
+datasets
+librosa
+soundfile
+einops
+vector_quantize_pytorch
+transformers
+accelerate
+tqdm
+
+# tortoise requirements
+inflect
+unidecode
+
+vocos[train]

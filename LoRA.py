@@ -12,6 +12,8 @@ from tortoise.utils.tokenizer import VoiceBpeTokenizer
 from trl import SFTTrainer
 from accelerate import Accelerator
 from datasets import load_dataset
+from dlas.utils import options as option
+from dlas.train import Trainer
 
 MODELS_DIR = os.environ.get('TORTOISE_MODELS_DIR', os.path.realpath(os.path.join(os.getcwd(), './models/tortoise/')))
 MODELS = {
@@ -165,28 +167,61 @@ class DL_LoRA:
         )
 
         #peft_config = PeftConfig.from_pretrained("./tortoise_mod")
+        rel_path = "gpt_finetune.yml"
+        config_path = rel_path 
+        opt = option.parse(config_path, is_train=True)
 
+        trainer = Trainer()
+        trainer.rank = -1
 
-        data = load_dataset("Abirate/english_quotes")
-        data['train'] = data['train'].map(self.merge_columns)
-        print(data['train']['prediction'][:5])
+        opt["path"]["pretrain_model_gpt"] = autoregressive_model_path
+        opt["path"]["experiments_root"] = os.path.join(os.path.abspath(''), "experiments")
+        opt["datasets"]["train"]["path"] = [
+        "/tmp/donald-trump-prepared-clips/train.txt"
+        ]
+        opt["datasets"]["val"]["path"] = [
+        "/tmp/donald-trump-prepared-clips/validation.txt"
+        ]
+        file_path_train = "/tmp/donald-trump-prepared-clips/train.txt"
+        file_path_validate = "/tmp/donald-trump-prepared-clips/validation.txt"
 
-        data = data.map(lambda samples: self.tokenizer(samples['prediction']), batched=True)
-
-
-        trainer = SFTTrainer(
-            model=self.model,
-            tokenizer=self.tokenizer,
-            train_dataset=data,
-            dataset_text_field="messages",
-            peft_config=self.model.peft_config,
-            packing=True, # pack samples together for efficient training
-            max_seq_length=1024,
-            args=training_arguments,
+        mel_norms_path = hf_hub_download(
+        "jbetker/tortoise-tts-v2",
+        "tortoise/data/mel_norms.pth",
         )
-        # Start training
+        #text train
+        #data= load_dataset("text", file_path_train, split="train")
+        #test= load_dataset("text", file_path_validate, split="test")
+        #data['validate'] = load_dataset(file_path_validate)
+        #data['train'] = data['train'].map(self.merge_columns)
+        #print(data['train']['prediction'][:5])
+        #data = data.map(lambda samples: self.tokenizer(samples['prediction']), batched=True)
+
+        #notebook train
+        opt["steps"]["gpt_train"]["injectors"]["paired_to_mel"]["mel_norm_file"] = mel_norms_path
+        opt["steps"]["gpt_train"]["injectors"]["paired_cond_to_mel"]["mel_norm_file"] = mel_norms_path
+        opt["steps"]["gpt_train"]["injectors"]["to_codes"]["dvae_config"] = "train_diffusion_vocoder_22k_level.yml"
+
+        launcher = "none"
+        mode = ""
+        trainer.init(config_path, opt, launcher, mode)
+
         self.model.config.use_cache = False
-        trainer.train()
+        #trainer = SFTTrainer(
+        #     model=self.model,
+        #     tokenizer=self.tokenizer,
+        #     train_dataset=data,
+        #     eval_dataset=test,
+        #     dataset_text_field="messages",
+        #     peft_config=self.model.peft_config,
+        #     packing=True, # pack samples together for efficient training
+        #     max_seq_length=1024,
+        #     args=training_arguments,
+        # )
+        # Start training
+
+        trainer.do_training()
+        #trainer.train()
 
 
 def main():
