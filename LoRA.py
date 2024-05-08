@@ -2,7 +2,7 @@ import os
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 import torch
 from tortoise.api import UnifiedVoice
-from peft import PeftConfig, LoraModel, LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
+from peft import PeftConfig, LoraModel, LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training, PeftModel
 import argparse
 
 from transformers import GPT2Config, GPT2PreTrainedModel, LogitsProcessorList, AutoModelForCausalLM, TFAutoModelForCausalLM,   TrainingArguments, BitsAndBytesConfig
@@ -205,6 +205,7 @@ class DL_LoRA:
         gpt_model.wte = unified_voice.text_embedding
         gpt_model.wpe = functools.partial(self.null_position_embeddings, dim=1024)
         gpt_model =  self.freeze_weights(gpt_model)
+        #?gpt_model.add_adapter(l_config)?
         gpt_model = get_peft_model(gpt_model, l_config)
         gpt_model = self.accelerator.prepare(gpt_model)  # Wrap with Accelerate for distributed training
         gpt_model.print_trainable_parameters()
@@ -213,21 +214,23 @@ class DL_LoRA:
         print(gpt_model)
         trainer.do_training()
         trainer.model.save(10)# niter in gpt_finetune.yml default is 10000
-        self.tokenizer.save_pretrained("./tortoise_complete")
+        #self.tokenizer.save_pretrained("./tortoise_complete")
 
+def extract_LoRA_from_peft(peft_model_path):
+    peft_model = PeftConfig.from_pretrained(peft_model_path)
+    peft_model.save_pretrained("adapters/")
+    
 
 def main():
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--text', type=str, default="The expressiveness of autoregressive transformers is literally nuts! I absolutely adore them.")
-
     adapter = DL_LoRA()
     adapter.load_peft_lora()
-    #adapter.load_data()
     adapter.train_data()
 
 if __name__ == "__main__":
-    main()
+    extract_LoRA_from_peft("lora_data/dt/10_gpt.pth")
+    #main()
 
 
 
