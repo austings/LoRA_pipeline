@@ -1,13 +1,21 @@
-import os
-os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+'''
+Austin Sierra
+DL Software
+the program begins and ends here
+Last edit May 8 2024
+'''
+import sys
 import torch
 from tortoise.api import UnifiedVoice
-from peft import PeftConfig, LoraModel, LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training, PeftModel
-import argparse
-
-from transformers import GPT2Config, GPT2PreTrainedModel, LogitsProcessorList, AutoModelForCausalLM, TFAutoModelForCausalLM,   TrainingArguments, BitsAndBytesConfig
+from transformers import GPT2Config, GPT2PreTrainedModel, LogitsProcessorList, AutoModelForCausalLM, TFAutoModelForCausalLM, TrainingArguments, BitsAndBytesConfig
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 from transformers.pytorch_utils import Conv1D
+from peft import PeftConfig, LoraConfig, LoraModel, get_peft_model, TaskType #, prepare_model_for_kbit_training, PeftModel
+#import peft
+import argparse
+
+import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 from huggingface_hub import hf_hub_download
 #from bitsandbytes import 
 from tortoise.utils.tokenizer import VoiceBpeTokenizer
@@ -18,7 +26,7 @@ from dlas.utils import options as option
 from dlas.train import Trainer
 import functools
 
-torch.cuda.empty_cache()
+#torch.cuda.empty_cache()
 MODELS_DIR = os.environ.get('TORTOISE_MODELS_DIR', os.path.realpath(os.path.join(os.getcwd(), './models/tortoise/')))
 MODELS = {
     'autoregressive.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/autoregressive.pth',
@@ -54,22 +62,6 @@ mel_norms_path = hf_hub_download(
 class DL_LoRA:
     def __init__(self):
         print("begin init")
-        #initialize autoregressive
-        #autoregressive = UnifiedVoice(
-        #    max_mel_tokens=604,
-        #    max_text_tokens=402,
-        #    max_conditioning_inputs=2,
-        #    layers=30,
-        #    model_dim=1024,
-        #    heads=16,
-        #    number_text_tokens=255,
-        #    start_text_token=255,
-        #    checkpointing=False,
-        #    train_solo_embeddings=False
-        #)
-        #autoregressive.load_state_dict(torch.load(autoregressive_model_path), strict=False)
-        #autoregressive.post_init_gpt2_config(use_deepspeed=True, kv_cache=True)
-        #initialize tokenizer 
         self.load_tokenizer_json(None)
        
         self.accelerator = Accelerator()
@@ -110,10 +102,6 @@ class DL_LoRA:
         print("begin freeze")
 
         parameters = model.parameters()
-        # Iterate through the parameters
-        #for param in parameters:
-        #    print(param)
-        #print(model)
 
         for param in parameters:
             param.requires_grad = False  # freeze the model - train adapters later
@@ -153,7 +141,6 @@ class DL_LoRA:
             fp16=False,
         )
 
-        #peft_config = PeftConfig.from_pretrained("./tortoise_mod")
         rel_path = "gpt_finetune.yml"
         config_path = rel_path 
         opt = option.parse(config_path, is_train=True)
@@ -181,8 +168,8 @@ class DL_LoRA:
         launcher = "none"
         mode = ""
         trainer.init(config_path, opt, launcher, mode)
-
-        unified_voice = trainer.model.networks["gpt"].module
+        # Create a dictionary from the base model's state dictionary
+        #base_state_dict = dict(unified_voice.gpt.state_dict().items()) #dict(
 
         l_config = LoraConfig(
             r = 16,
@@ -191,7 +178,8 @@ class DL_LoRA:
             task_type = TaskType.CAUSAL_LM,
             target_modules = [
                 "c_attn","c_proj","c_fc",
-            ]    
+            ],
+            modules_to_save=["lm_head"],
         )
 
         bnb_config = BitsAndBytesConfig(
@@ -201,60 +189,134 @@ class DL_LoRA:
         )   
 
         # Load the Lora model
+
+        unified_voice = trainer.model.networks["gpt"].module
         gpt_model = unified_voice.gpt
         gpt_model.wte = unified_voice.text_embedding
         gpt_model.wpe = functools.partial(self.null_position_embeddings, dim=1024)
         gpt_model =  self.freeze_weights(gpt_model)
-        #?gpt_model.add_adapter(l_config)?
+        
+        #gpt_model..module.gpt.add_adapter(l_config)#?
+        #text_lora_parameters_one = list(filter(lambda p: p.requires_grad, gpt_model.parameters()))
+
         gpt_model = get_peft_model(gpt_model, l_config)
         gpt_model = self.accelerator.prepare(gpt_model)  # Wrap with Accelerate for distributed training
         gpt_model.print_trainable_parameters()
         gpt_model.config.use_cache = False
         del gpt_model.base_model.model.wte
-        print(gpt_model)
+        #train and save the new model
         trainer.do_training()
-        trainer.model.save(10)# niter in gpt_finetune.yml default is 10000
-        #self.tokenizer.save_pretrained("./tortoise_complete")
+        #gpt_model = trainer.model.networks["gpt"].module
+        gpt_model.save_pretrained("./tortoise_mod")
+        trainer.model.save(10)# n_iter in gpt_finetune.yml default is 10000
+        #trainer.model.networks["gpt"].module.gpt.save_model("./adapters")
 
-def extract_LoRA_from_peft(peft_model_path):
-    peft_model = PeftConfig.from_pretrained(peft_model_path)
-    peft_model.save_pretrained("adapters/")
-    
+        from safetensors.torch import load_model, save_model
 
+        #save_model(trainer.model, "model.safetensors")
+        save_model(trainer.model.networks["gpt"].module.gpt, "model_weight.safetensors")
+
+        lora_weights = {}
+        for key, value in trainer.model.networks["gpt"].module.gpt.state_dict().items():
+            if "c_attn" in key or "c_proj" in key or "c_fc" in key:
+                lora_weights[key] = value
+
+        # Save the LoRA weights to a safetensor file
+        torch.save(lora_weights, "model_weight_ft.safetensors")
+        
+
+
+#generate peft
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--text', type=str, default="The expressiveness of autoregressive transformers is literally nuts! I absolutely adore them.")
     adapter = DL_LoRA()
     adapter.load_peft_lora()
     adapter.train_data()
 
+#swap loras
+def pipeline_main():
+    adapter = DL_LoRA()
+    adapter.extract_LoRA_from_peft("lora_data/dt/10_gpt.pth")
+
+
+def extract_LoRA_from_peft( peft_model_path):
+
+    import safetensors.torch
+    # Load the PyTorch model
+    model = AutoModelForCausalLM.from_pretrained(peft_model_path, torch_dtype=torch.float16)
+
+    # Extract the model weights
+    model_weights = model.state_dict()
+    safetensors.torch.save_file(model_weights, "./tortoise_complete.safetensors")
+    #from transformers import pipeline
+
+
 if __name__ == "__main__":
-    extract_LoRA_from_peft("lora_data/dt/10_gpt.pth")
-    #main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--text', type=str, default="The expressiveness of autoregressive transformers is literally nuts! I absolutely adore them.")
+
+    #extract_LoRA_from_peft("./model_weight.safetensors")#lora_data/dt/10_gpt.pth")
+    #pipeline_main()
+    main()
 
 
 
+# save weights seperately from complete model
+        
+        #torch.save(trainer.model.networks["gpt"].module.gpt.state_dict(), "./adapters/weights.bin")
 
+    #generator = pipeline("text-to-speech", model="peft_model_path")
+    #peft_model = PeftConfig.from_pretrained(peft_model_path)
+    #peft_model.save_pretrained("adapters/")
+    #pipeline.load_lora_weights(
+    #    peft_model_path,
+    #    adapter_name="lcm",
+    #    #cache_dir=cache_dir,
+    #    local_files_only=True,
+    #    tokenizer = self.tokenizer
+    #)
+    '''
+        #create a lora adapter from said model
+        #lora_adapter = LoraModel(
+        #    trainer.model.networks["gpt"].module.gpt,
+        #    l_config,
+        #    "trump"
+        #)
+        #fine_tuned_weights = trainer.model.networks["gpt"].module.gpt.state_dict()
+        # Merge the fine-tuned weights into the LoRA adapter
+        #lora_adapter.merge_weights(fine_tuned_weights)
+        #lora_adapter.save_pretrained("./adapters")
+        weights = dict(trainer.model.networks["gpt"].module.gpt.state_dict().items())
+        print(weights)
+        # Initialize a dictionary to store the modified tensors
+        modified_tensors = {}
+        # Loop through the base model's state dictionary
+        for key, base_tensor in base_state_dict.items():
+            # Check if the tensor has been modified during fine-tuning
+            if key in weights:
+                if torch.any(base_tensor != weights[key]):
+                    modified_tensors[key] = weights[key]
+        safetensors.torch.save_file(modified_tensors, "./tortoise_complete.safetensors")
+        '''
 
-    # trainer = SFTTrainer(
-    #     model=self.model,
-    #     train_dataset=train_data,
-    #     eval_dataset=test_data,
-    #     dataset_text_field="prompt",
-    #     peft_config=lora_config,
-    #     args=transformers.TrainingArguments(
-    #         per_device_train_batch_size=2,
-    #         gradient_accumulation_steps=4,
-    #         warmup_steps=0.03,
-    # #        max_steps=100000,
-    #         learning_rate=2e-4,
-    #         logging_steps=500,
-    #         output_dir="outputs",
-    #         optim="paged_adamw_8bit",
-    #         save_strategy="epoch",
-    #     ),
-    #     data_collator=transformers.DataCollatorForLanguageModeling(tokenizer, mlm=False),
-    # )
+        # trainer = SFTTrainer(
+        #     model=self.model,
+        #     train_dataset=train_data,
+        #     eval_dataset=test_data,
+        #     dataset_text_field="prompt",
+        #     peft_config=lora_config,
+        #     args=transformers.TrainingArguments(
+        #         per_device_train_batch_size=2,
+        #         gradient_accumulation_steps=4,
+        #         warmup_steps=0.03,
+        # #        max_steps=100000,
+        #         learning_rate=2e-4,
+        #         logging_steps=500,
+        #         output_dir="outputs",
+        #         optim="paged_adamw_8bit",
+        #         save_strategy="epoch",
+        #     ),
+        #     data_collator=transformers.DataCollatorForLanguageModeling(tokenizer, mlm=False),
+        # )
 
         #gpt_model.wte = unified_voice.mel_embedding #unified_voice.text_embedding.emb #= torch.zeros() #del g
         #gpt_model.resize_token_embeddings(len(self.tokenizer))
