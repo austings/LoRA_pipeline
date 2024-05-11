@@ -196,33 +196,29 @@ class DL_LoRA:
         gpt_model.wpe = functools.partial(self.null_position_embeddings, dim=1024)
         gpt_model =  self.freeze_weights(gpt_model)
         
-        #gpt_model..module.gpt.add_adapter(l_config)#?
-        #text_lora_parameters_one = list(filter(lambda p: p.requires_grad, gpt_model.parameters()))
-
         gpt_model = get_peft_model(gpt_model, l_config)
+        print(gpt_model)
         gpt_model = self.accelerator.prepare(gpt_model)  # Wrap with Accelerate for distributed training
         gpt_model.print_trainable_parameters()
         gpt_model.config.use_cache = False
         del gpt_model.base_model.model.wte
-        #train and save the new model
         trainer.do_training()
-        #gpt_model = trainer.model.networks["gpt"].module
         gpt_model.save_pretrained("./tortoise_mod")
         trainer.model.save(10)# n_iter in gpt_finetune.yml default is 10000
         #trainer.model.networks["gpt"].module.gpt.save_model("./adapters")
 
-        from safetensors.torch import load_model, save_model
+        #from safetensors.torch import load_model, save_model
 
         #save_model(trainer.model, "model.safetensors")
-        save_model(trainer.model.networks["gpt"].module.gpt, "model_weight.safetensors")
+        #save_model(trainer.model.networks["gpt"].module.gpt, "model_weight.safetensors")
 
-        lora_weights = {}
-        for key, value in trainer.model.networks["gpt"].module.gpt.state_dict().items():
-            if "c_attn" in key or "c_proj" in key or "c_fc" in key:
-                lora_weights[key] = value
+        #lora_weights = {}
+        #for key, value in trainer.model.networks["gpt"].module.gpt.state_dict().items():
+        #    if "c_attn" in key or "c_proj" in key or "c_fc" in key:
+        #        lora_weights[key] = value
 
         # Save the LoRA weights to a safetensor file
-        torch.save(lora_weights, "model_weight_ft.safetensors")
+        #torch.save(lora_weights, "model_weight_ft.safetensors")
         
 
 

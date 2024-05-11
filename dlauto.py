@@ -24,8 +24,10 @@ from tortoise.utils.audio import load_voices, wav_to_univnet_mel, denormalize_ta
 import concurrent.futures
 from transformers import LogitsProcessorList, GPT2PreTrainedModel, GPT2Config
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import AutoPeftModelForCausalLM
 
-
+from peft import PeftModel, LoraModel
 
 #                           #
 #       Global Defaults     #
@@ -34,7 +36,7 @@ from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 DEFAULT_MODELS_DIR = os.path.join(os.path.expanduser('~'), '.cache', 'tortoise', 'models')
 MODELS_DIR = os.environ.get('TORTOISE_MODELS_DIR', DEFAULT_MODELS_DIR)
 MODELS = {
-    'autoregressive.pth': '../../../training/gpt/finetune/models/10_gpt.pth',
+    'autoregressive.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/autoregressive.pth',
     'classifier.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/classifier.pth',
     'clvp2.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/clvp2.pth',
     'cvvp.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/cvvp.pth',
@@ -42,9 +44,16 @@ MODELS = {
     'vocoder.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/vocoder.pth',
     'rlg_auto.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/rlg_auto.pth',
     'rlg_diffuser.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/rlg_diffuser.pth',
+    'bigvgan_base_24khz_100band.pth': 'https://huggingface.co/ecker/tortoise-tts-models/resolve/main/models/bigvgan_base_24khz_100band.pth',
+    'bigvgan_24khz_100band.pth': 'https://huggingface.co/ecker/tortoise-tts-models/resolve/main/models/bigvgan_24khz_100band.pth',
+    'bigvgan_base_24khz_100band.json': 'https://huggingface.co/ecker/tortoise-tts-models/resolve/main/models/bigvgan_base_24khz_100band.json',
+    'bigvgan_24khz_100band.json': 'https://huggingface.co/ecker/tortoise-tts-models/resolve/main/models/bigvgan_24khz_100band.json',
 }
 
-
+autoregressive_model_path = hf_hub_download(
+  "jbetker/tortoise-tts-v2",
+  ".models/autoregressive.pth"
+)
 
 def null_position_embeddings(range, dim):
     return torch.zeros((range.shape[0], range.shape[1], dim), device=range.device)
@@ -64,6 +73,12 @@ class GenerationConfig:
         self.layers = 30
         if use_path_model:
             model = torch.load(get_model_path('autoregressive.pth', MODELS_DIR))
+            #model = PeftModel.from_pretrained(get_model_path('autoregressive.pth', MODELS_DIR), peft_model_id)
+            #base_model = AutoModelForCausalLM.from_pretrained(autoregressive_model_path)
+
+            #model = PeftModel.from_pretrained(self.autoregressive.pre_config_module.gpt, peft_model_id)
+            #self.autoregressive.pre_config_module.gpt = model.merge_and_unload()
+            #model.load_adapter(peft_model_id)
 
             #UNCOMMENT THIS IF YOU WANT TO PASS ATTENTION/POSITIONAL IDS
             #past_shape = [1, 16, 606, 1024] #model.config.batch_size, # model.config.n_head (heads) #model.config.n_ctx (max_mel_tokens+2) #model_dim
@@ -154,6 +169,7 @@ class GenerationConfig:
         self.max_generate_length = self.max_mel_tokens_pad
         self.conditioning_cache = None
         self.stft = None
+        self.clvp = self.load_clvp_model()
 
     class ConfigModule(nn.Module):
         def __init__(self, layers=8, model_dim=512, heads=8, max_text_tokens=120, max_mel_tokens=250,
@@ -230,7 +246,7 @@ class GenerationConfig:
                       "return_dict":True 
                       }
             inputs_dict2 = {"inputs_embeds":emb,"return_dict":True }
-            gpt_out = self.gpt(inputs_embeds=emb)
+            gpt_out = self.gpt.base_model(inputs_embeds=emb)
 
             enc = gpt_out.last_hidden_state[:, 1:]  # The first logit is tied to the speech_conditioning_input
             enc = self.final_norm(enc)
@@ -342,15 +358,7 @@ class GenerationConfig:
                 gradient_checkpointing=False,
                 use_cache=True,
             )
-            self.inference_model = self.GPT2InferenceModel(
-                gpt_config,
-                self.gpt,
-                self.mel_pos_embedding,
-                self.mel_embedding,
-                self.final_norm,
-                self.mel_head,
-                kv_cache=True,
-            )
+
             self.tensor_zero_config = DeepSpeedZeroConfig(
                 stage=1,
                 offload_optimizer={
@@ -367,6 +375,21 @@ class GenerationConfig:
                 allgather_bucket_size=32,
                 overlap_comm=True,
                 load_from_fp32_weights=False
+            )
+            peft_model_id = "./tortoise_mod"#"./LoRA_pipeline/tortoise_mod"
+            print(self.gpt)
+            self.gpt = PeftModel.from_pretrained(self.gpt, peft_model_id)
+            #self.gpt = model
+            print("\n\n\n")
+            print(self.gpt)
+            self.inference_model = self.GPT2InferenceModel(
+                gpt_config,
+                self.gpt.base_model,
+                self.mel_pos_embedding,
+                self.mel_embedding,
+                self.final_norm,
+                self.mel_head,
+                kv_cache=True,
             )
             self.ds_engine = deepspeed.init_inference(model=self.inference_model, replace_with_kernel_inject=True,
                                                       dtype=torch.float32, zero=self.tensor_zero_config)
@@ -652,7 +675,8 @@ class GenerationConfig:
 
     def prepare_inference_tts(self, text_inputs,auto_latents):
         self.text_inputs = self.get_random_text_inputs(text_inputs)
-        self.clvp = self.load_clvp_model()
+        #if(self.clvp is None):
+        #self.clvp = self.load_clvp_model()
         self.mel_codes = self.get_random_mel_codes(auto_latents)
         #self.auto_latent = self.auto_latent.repeat(self.k, 1)
 
@@ -760,10 +784,21 @@ def get_model_path(model_name, models_dir=MODELS_DIR):
 #                         #
 
 def load_autoregressive_model(auto_latents, text_inputs="Ishmael discusses cetology (the zoological classification and natural history of the whale), and describes the crew members.",auto_conds=None):
+    
+   
     config = GenerationConfig(use_path_model=True,use_deterministic_seed=True)
     config.pre_config_module.post_init()
     config.prepare_inference_tts(text_inputs, auto_latents)
     return config #.half().eval()
+
+def execute_autoregressive_model():
+    config = GenerationConfig(use_path_model=True,use_deterministic_seed=True)
+    config.pre_config_module.post_init()
+    return config #.half().eval()
+
+def init_autoregressive_model(config, auto_latents, text_inputs="Ishmael discusses cetology (the zoological classification and natural history of the whale), and describes the crew members.",auto_conds=None):
+    config.prepare_inference_tts(text_inputs, auto_latents)
+    return config 
 
 
 

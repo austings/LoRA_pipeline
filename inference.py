@@ -19,6 +19,11 @@ from tortoise.utils.wav2vec_alignment import Wav2VecAlignment
 from huggingface_hub import hf_hub_download
 import concurrent.futures
 import statistics
+from peft import LoraConfig, TaskType
+from peft import AutoPeftModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import get_peft_model_state_dict
+from peft import PeftModel, LoraModel
 
 pbar = None
 
@@ -29,7 +34,7 @@ average_valuesD = []
 DEFAULT_MODELS_DIR = os.path.join(os.path.expanduser('~'), '.cache', 'tortoise', 'models')
 MODELS_DIR = os.environ.get('TORTOISE_MODELS_DIR', DEFAULT_MODELS_DIR)
 MODELS = {
-    'autoregressive.pth': 'training/gpt/finetune/models/10_gpt.pth',
+    'autoregressive.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/autoregressive.pth',
     'classifier.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/classifier.pth',
     'clvp2.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/clvp2.pth',
     'cvvp.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/cvvp.pth',
@@ -37,6 +42,10 @@ MODELS = {
     'vocoder.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/vocoder.pth',
     'rlg_auto.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/rlg_auto.pth',
     'rlg_diffuser.pth': 'https://huggingface.co/jbetker/tortoise-tts-v2/resolve/main/.models/rlg_diffuser.pth',
+    'bigvgan_base_24khz_100band.pth': 'https://huggingface.co/ecker/tortoise-tts-models/resolve/main/models/bigvgan_base_24khz_100band.pth',
+    'bigvgan_24khz_100band.pth': 'https://huggingface.co/ecker/tortoise-tts-models/resolve/main/models/bigvgan_24khz_100band.pth',
+    'bigvgan_base_24khz_100band.json': 'https://huggingface.co/ecker/tortoise-tts-models/resolve/main/models/bigvgan_base_24khz_100band.json',
+    'bigvgan_24khz_100band.json': 'https://huggingface.co/ecker/tortoise-tts-models/resolve/main/models/bigvgan_24khz_100band.json',
 }
 
 
@@ -148,7 +157,7 @@ class TextToSpeech:
             clvp_future = executor.submit(load_clvp_model)
             vocoder_future = executor.submit(load_vocoder)
 
-        self.autoregressive = dlco.load_autoregressive_model(self.auto_latent)
+        self.autoregressive = dlco.execute_autoregressive_model()
         self.diffusion = diffusion_future.result()
         self.clvp = clvp_future.result()
         self.vocoder = vocoder_future.result()
@@ -158,7 +167,7 @@ class TextToSpeech:
         self.rlg_diffusion = None
 
     def decouple_Tuple(self):
-        c: tuple[torch.Tensor, torch.Tensor] = torch.load("lora_data/dt/dt_latent.pth", map_location="cpu")
+        c: tuple[torch.Tensor, torch.Tensor] = torch.load("./lora_data/dt/dt_latent.pth", map_location="cpu")#torch.load("./LoRA_pipeline/lora_data/dt/dt_latent.pth", map_location="cpu")
         return c
 
     def get_conditioning_latents(self, voice_samples, return_mels=False):
@@ -208,9 +217,26 @@ class TextToSpeech:
 
         diffuser = load_discrete_vocoder_diffuser(desired_diffusion_steps=diffusion_iterations, cond_free=cond_free,
                                                   cond_free_k=cond_free_k)
-
+        self.autoregressive.prepare_inference_tts(text, self.auto_latent)
         with torch.no_grad():
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.half):
+                l_config = LoraConfig(
+                    r = 16,
+                    lora_alpha = 32,
+                    lora_dropout = .05,
+                    task_type = TaskType.CAUSAL_LM,
+                    target_modules = [
+                        "c_attn","c_proj","c_fc",
+                    ]
+                )
+               
+                #import  safetensors.torch #import load_model, save_model
+                #lora_weights = safetensors.torch.load("./tortoise_mod/adapter_model.safetensors")
+                #peft_model_id = "./tortoise_mod"
+                #model_adapter = AutoModelForCausalLM.from_pretrained(peft_model_id)
+                #self.autoregressive.pre_config_module.load_state_dict(get_peft_model_state_dict(model_adapter))
+                #model = PeftModel.from_pretrained(self.autoregressive.pre_config_module.gpt, peft_model_id)
+                #self.autoregressive.pre_config_module.gpt = model.merge_and_unload()
                 best_latents = self.autoregressive.pre_config_module(self.auto_latent, self.autoregressive.text_inputs, self.autoregressive.mel_codes)
             wav_candidates = []
             for b in range(self.autoregressive.mel_codes.shape[0]):

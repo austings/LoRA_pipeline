@@ -121,7 +121,7 @@ path:
   # resume_state: ''
 
 train:
-  niter: 10 #10000
+  niter: 500 #10000
   warmup_iter: -1
   mega_batch_factor: 4
   val_freq: 100
