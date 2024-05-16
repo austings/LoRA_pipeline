@@ -23,11 +23,13 @@ from tortoise.utils.typical_sampling import TypicalLogitsWarper
 from tortoise.utils.audio import load_voices, wav_to_univnet_mel, denormalize_tacotron_mel, TacotronSTFT
 import concurrent.futures
 from transformers import LogitsProcessorList, GPT2PreTrainedModel, GPT2Config
+from transformers.models.gpt2.modeling_gpt2 import GPT2Block
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import AutoPeftModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+#from peft import AutoPeftModelForCausalLM
+from safetensors import safe_open
 
-from peft import PeftModel, LoraModel
+from peft import PeftModel
 
 #                           #
 #       Global Defaults     #
@@ -72,7 +74,8 @@ class GenerationConfig:
         past_keys_values = {}
         self.layers = 30
         if use_path_model:
-            model = torch.load(get_model_path('autoregressive.pth', MODELS_DIR))
+            model = torch.load('./LoRA_pipeline/lora_data/500_gpt.pth')
+            #model = torch.load(get_model_path('autoregressive.pth', MODELS_DIR))
             #model = PeftModel.from_pretrained(get_model_path('autoregressive.pth', MODELS_DIR), peft_model_id)
             #base_model = AutoModelForCausalLM.from_pretrained(autoregressive_model_path)
 
@@ -116,8 +119,6 @@ class GenerationConfig:
             #            weights_shapes = []
             #            i_sub=0
             #            i = i+1
-
- 
 
         self.tokenizer = VoiceBpeTokenizer(vocab_file=None, use_basic_cleaners=False, )                        
         self.pre_config_module = self.ConfigModule(max_mel_tokens=max_mel_tokens, max_text_tokens=402,         
@@ -237,33 +238,20 @@ class GenerationConfig:
                        get_attns=False, return_latent=False):
 
             emb = torch.cat([speech_conditioning_inputs, first_inputs, second_inputs], dim=1)
-            inputs = {"input_ids": None,"past_key_values": None,
-                      "attention_mask":None,"token_type_ids":None,
-                      "position_ids":None,"head_mask":None,
-                      "inputs_embeds":emb,"encoder_hidden_states":None, #inputs_embeds: emb
-                      "encoder_attention_mask":None,"use_cache":None,
-                      "output_attentions":None,"output_hidden_states":None,
-                      "return_dict":True 
-                      }
-            inputs_dict2 = {"inputs_embeds":emb,"return_dict":True }
-            gpt_out = self.gpt.base_model(inputs_embeds=emb)
+            gpt_out = self.gpt(inputs_embeds=emb, return_dict=True, output_attentions=False)
 
             enc = gpt_out.last_hidden_state[:, 1:]  # The first logit is tied to the speech_conditioning_input
             enc = self.final_norm(enc)
 
             return enc[:,speech_conditioning_inputs.shape[1]:speech_conditioning_inputs.shape[1] + first_inputs.shape[
                            1]], enc[:, -second_inputs.shape[1]:]
- 
 
 
         def forward(self, speech_conditioning_latent, text_inputs, mel_codes, types=None,
                     text_first=True, raw_mels=None, return_attentions=False,
                     return_latent=True, clip_inputs=False):
 
-
             text_inputs = text_inputs.repeat(1, 1)
-            #text_lengths = torch.tensor([text_inputs.shape[-1]])
-
             mel_codes = self.set_mel_padding(mel_codes, np.array([mel_codes.shape[-1] * 1024]))
             text_inputs = F.pad(text_inputs, (0, 1), value=self.stop_text_token)
             mel_codes = F.pad(mel_codes, (0, 1), value=self.stop_mel_token)
@@ -307,8 +295,9 @@ class GenerationConfig:
             gpt.wpe = functools.partial(null_position_embeddings, dim=model_dim)
             del gpt.wte
            
-            return ( gpt, self.LearnedPositionEmbeddings(max_mel_seq_len, model_dim),
-                    self.LearnedPositionEmbeddings(max_text_seq_len, model_dim), None, None)
+            return gpt, self.LearnedPositionEmbeddings(max_mel_seq_len, model_dim), self.LearnedPositionEmbeddings(max_text_seq_len, model_dim),\
+                None, None
+
 
 
         def build_aligned_inputs_and_targets(self, input, start_token, stop_token):
@@ -344,7 +333,38 @@ class GenerationConfig:
                                                 num_return_sequences=num_return_sequences,
                                                 **hf_generate_kwargs).to('cuda')
             return gen[:, trunc_index:]
-
+            
+        # Function to load safetensors adapter
+        def load_adapter(self, model, adapter_path):
+            with safe_open(adapter_path, framework="pt", device="cpu") as f:
+                adapter_weights = {k: torch.tensor(f.get_tensor(k)) for k in f.keys()}
+                
+            # Assuming the adapter weights should be applied to the base model
+            # This may involve setting specific layers or modules within the base model
+            i = 0
+            alpha = 128
+            for i, layer in enumerate(model.h):
+                if isinstance(layer, GPT2Block):
+                    key  = f'base_model.model.h.{i}.attn.c_attn.lora_A.weight.' 
+                    key2 = f'base_model.model.h.{i}.attn.c_attn.lora_B.weight.' 
+                    key3 = f'base_model.model.h.{i}.attn.c_proj.lora_A.weight.' 
+                    key4 = f'base_model.model.h.{i}.attn.c_proj.lora_B.weight.' 
+                    key5 = f'base_model.model.h.{i}.mlp.c_fc.lora_A.weight.' 
+                    key6 = f'base_model.model.h.{i}.mlp.c_fc.lora_B.weight.' 
+                    key7 = f'base_model.model.h.{i}.mlp.c_proj.lora_A.weight.' 
+                    key8 = f'base_model.model.h.{i}.mlp.c_proj.lora_B.weight.' 
+                    #layer.attn.c_attn.weight =  + 
+                    lora_update = (adapter_weights[key] @ adapter_weights[key2]) * (alpha / adapter_weights[key].size(0))
+                    layer.attn.c_attn.weight = adapter_weights[key]
+                    layer.attn.c_attn.weight = adapter_weights[key]
+                    layer.attn.c_attn.weight = adapter_weights[key]
+                    layer.attn.c_attn.weight = adapter_weights[key]
+                    layer.attn.c_attn.weight = adapter_weights[key]
+                    layer.attn.c_attn.weight = adapter_weights[key]
+                    if layer in adapter_weights:
+                        model.data = adapter_weights[layer].data
+            return model
+          
 
         def post_init(self):
             seq_length = self.max_mel_tokens + self.max_text_tokens + 2
@@ -376,24 +396,58 @@ class GenerationConfig:
                 overlap_comm=True,
                 load_from_fp32_weights=False
             )
-            peft_model_id = "./tortoise_mod"#"./LoRA_pipeline/tortoise_mod"
-            print(self.gpt)
-            self.gpt = PeftModel.from_pretrained(self.gpt, peft_model_id)
-            #self.gpt = model
+
+            #with open('output1.txt', 'a') as file:
+            #    for i, layer in enumerate(self.gpt.h):
+            #        print(f"\nLayer {i + 1} attention details:", file=file)
+            #        print(layer.attn, file=file)
+            #        print(layer.attn.c_attn.weight.data, file=file)
+            #peft_model_id = "./LoRA_pipeline/tortoise_mod/alpha128"
+            #"./LoRA_pipeline/tortoise_mod"
+            #self.gpt = PeftModel.from_pretrained(self.gpt, peft_model_id, device_map="auto",use_safetensors=True).base_model
+            #self.gpt.add_weighted_adapter(
+            #    adapters=["default"], #define the name in lora config
+            #    weights=[1],
+            #    adapter_name="combined",
+            #    combination_type="svd",
+            #)
+            # Load the adapter into the base model
+            #self.gpt = self.load_adapter(self.gpt, "./LoRA_pipeline/tortoise_mod/220/adapter_model.safetensors")
+            #self.gpt = self.gpt.merge_and_unload() #WHEN DONE DO THIS
+            #print("NEW:\n")
+            #with open('output2.txt', 'a') as file:
+            #    for i, layer in enumerate(self.gpt.h):
+            #        print(f"\nLayer {i + 1} attention details:", file=file)
+            #        print(layer.attn, file=file)
+            #        print(layer.attn.c_attn.weight.data, file=file)
+            #        print("\nlorab:\n",file=file)
+            #        print(layer.attn.c_attn.lora_B.default.weight,file=file)
+            #        print("\nloraa:\n",file=file)
+            #        print(layer.attn.c_attn.lora_A.default.weight,file=file)
+            #
+            #    #print(layer.attn.attn_dropout)
+                #print(layer.attn.resid_dropout)
             print("\n\n\n")
-            print(self.gpt)
+            #print(self.gpt)
+
             self.inference_model = self.GPT2InferenceModel(
                 gpt_config,
-                self.gpt.base_model,
+                self.gpt,
                 self.mel_pos_embedding,
                 self.mel_embedding,
                 self.final_norm,
                 self.mel_head,
                 kv_cache=True,
             )
+
+            #self.inference_model = PeftModel.from_pretrained(self.inference_model, peft_model_id, device_map="auto",use_safetensors=True).base_model
+            #self.inference_model.merge_and_unload()
             self.ds_engine = deepspeed.init_inference(model=self.inference_model, replace_with_kernel_inject=True,
                                                       dtype=torch.float32, zero=self.tensor_zero_config)
             self.inference_model = self.ds_engine.module.eval()
+            #self.inference_model = self.inference_model.eval()
+            self.gpt.wte = self.mel_embedding
+
 
 
         class MelEncoder(nn.Module):
@@ -516,6 +570,8 @@ class GenerationConfig:
                 self.transformer = gpt
                 self.text_pos_embedding = text_pos_emb
                 self.embeddings = embeddings
+                #self.embeddingsA = embeddingsA
+                #self.embeddingsB = embeddingsB
                 self.final_norm = norm
                 self.lm_head = nn.Sequential(norm, linear)
                 self.kv_cache = kv_cache
@@ -533,7 +589,6 @@ class GenerationConfig:
                 self.lm_head = self.lm_head.to(self.transformer.first_device)
                 self.model_parallel = True
 
-
             def deparallelize(self):
                 self.transformer.deparallelize()
                 self.transformer = self.transformer.to("cpu")
@@ -543,18 +598,14 @@ class GenerationConfig:
                 if torch.backends.mps.is_available():
                     torch.mps.empty_cache()
 
-
             def get_output_embeddings(self):
                 return self.lm_head
-
 
             def set_output_embeddings(self, new_embeddings):
                 self.lm_head = new_embeddings
 
-
             def store_mel_emb(self, mel_emb):
                 self.cached_mel_emb = mel_emb
-
 
             def prepare_inputs_for_generation(self, input_ids, past_key_values=None, **kwargs):
                 token_type_ids = kwargs.get("token_type_ids", None)  # usually None
@@ -608,21 +659,11 @@ class GenerationConfig:
                     emb = emb + self.text_pos_embedding.get_fixed_embedding(attention_mask.shape[1] - mel_len,
                                                                             attention_mask.device)
 
-                transformer_outputs = self.transformer(inputs_embeds=emb)#, past_key_values=past_key_values,
-                                                       #attention_mask=attention_mask, token_type_ids=token_type_ids,
-                                                       #position_ids=position_ids, head_mask=head_mask,
-                                                       #encoder_hidden_states=encoder_hidden_states,
-                                                       #encoder_attention_mask=encoder_attention_mask,
-                                                       #use_cache=use_cache,
-                                                       #output_attentions=output_attentions,
-                                                       #output_hidden_states=output_hidden_states,
-                                                       #return_dict=return_dict)
-                # print('second phase: ', time.time() - second_time) #13msec, 22msec without compile
+                transformer_outputs = self.transformer(inputs_embeds=emb)
                 hidden_states = transformer_outputs[0]
                 lm_logits = self.lm_head(hidden_states)
                 return CausalLMOutputWithCrossAttentions(loss=None, logits=lm_logits,
                                                          past_key_values=transformer_outputs.past_key_values,
-                                                         #last_hidden_state=transformer_outputs.hidden_states,
                                                          attentions=transformer_outputs.attentions,
                                                          cross_attentions=transformer_outputs.cross_attentions)
 
@@ -675,8 +716,6 @@ class GenerationConfig:
 
     def prepare_inference_tts(self, text_inputs,auto_latents):
         self.text_inputs = self.get_random_text_inputs(text_inputs)
-        #if(self.clvp is None):
-        #self.clvp = self.load_clvp_model()
         self.mel_codes = self.get_random_mel_codes(auto_latents)
         #self.auto_latent = self.auto_latent.repeat(self.k, 1)
 

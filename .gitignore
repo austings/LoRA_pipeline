@@ -3,4 +3,7 @@ my_env/
 experiments/
 tortoise-tts/
 training/
-lora_data/dt
+lora_data/
+__pycache__/
+results/
+tortoise_mod/

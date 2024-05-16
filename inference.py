@@ -20,7 +20,7 @@ from huggingface_hub import hf_hub_download
 import concurrent.futures
 import statistics
 from peft import LoraConfig, TaskType
-from peft import AutoPeftModelForCausalLM
+#from peft import AutoPeftModelForCausalLM
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import get_peft_model_state_dict
 from peft import PeftModel, LoraModel
@@ -167,7 +167,7 @@ class TextToSpeech:
         self.rlg_diffusion = None
 
     def decouple_Tuple(self):
-        c: tuple[torch.Tensor, torch.Tensor] = torch.load("./lora_data/dt/dt_latent.pth", map_location="cpu")#torch.load("./LoRA_pipeline/lora_data/dt/dt_latent.pth", map_location="cpu")
+        c: tuple[torch.Tensor, torch.Tensor] = torch.load("./LoRA_pipeline/lora_data/dt/dt_latent.pth", map_location="cpu")#torch.load("./LoRA_pipeline/lora_data/dt/dt_latent.pth", map_location="cpu")
         return c
 
     def get_conditioning_latents(self, voice_samples, return_mels=False):
@@ -217,26 +217,20 @@ class TextToSpeech:
 
         diffuser = load_discrete_vocoder_diffuser(desired_diffusion_steps=diffusion_iterations, cond_free=cond_free,
                                                   cond_free_k=cond_free_k)
+        
         self.autoregressive.prepare_inference_tts(text, self.auto_latent)
         with torch.no_grad():
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.half):
-                l_config = LoraConfig(
-                    r = 16,
-                    lora_alpha = 32,
-                    lora_dropout = .05,
-                    task_type = TaskType.CAUSAL_LM,
-                    target_modules = [
-                        "c_attn","c_proj","c_fc",
-                    ]
-                )
-               
-                #import  safetensors.torch #import load_model, save_model
-                #lora_weights = safetensors.torch.load("./tortoise_mod/adapter_model.safetensors")
-                #peft_model_id = "./tortoise_mod"
-                #model_adapter = AutoModelForCausalLM.from_pretrained(peft_model_id)
-                #self.autoregressive.pre_config_module.load_state_dict(get_peft_model_state_dict(model_adapter))
-                #model = PeftModel.from_pretrained(self.autoregressive.pre_config_module.gpt, peft_model_id)
-                #self.autoregressive.pre_config_module.gpt = model.merge_and_unload()
+                #l_config = LoraConfig(
+                #    r = 16,
+                #    lora_alpha = 32,
+                #    lora_dropout = .05,
+                #    task_type = TaskType.CAUSAL_LM,
+                #    target_modules = [
+                #        "c_attn","c_proj","c_fc",
+                #    ]
+                #)
+                #best_latents = self.autoregressive.pre_config_module.generate(self.auto_latent, self.autoregressive.text_inputs, self.autoregressive.mel_codes)
                 best_latents = self.autoregressive.pre_config_module(self.auto_latent, self.autoregressive.text_inputs, self.autoregressive.mel_codes)
             wav_candidates = []
             for b in range(self.autoregressive.mel_codes.shape[0]):
@@ -267,4 +261,5 @@ class TextToSpeech:
 
             #wav_candidates = [potentially_redact(wav_candidate, text) for wav_candidate in wav_candidates]
             #print('diffuser average time: ', average)
+            #WHEN DONE DO THIS:             self.gpt = self.gpt.base_model.merge_and_unload()
             return wav_candidates[0]

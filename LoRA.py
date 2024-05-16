@@ -7,7 +7,7 @@ Last edit May 8 2024
 import sys
 import torch
 from tortoise.api import UnifiedVoice
-from transformers import GPT2Config, GPT2PreTrainedModel, LogitsProcessorList, AutoModelForCausalLM, TFAutoModelForCausalLM, TrainingArguments, BitsAndBytesConfig
+from transformers import GPT2Config, GPT2PreTrainedModel, LogitsProcessorList, AutoModelForCausalLM, TFAutoModelForCausalLM, TrainingArguments#, #BitsAndBytesConfig
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 from transformers.pytorch_utils import Conv1D
 from peft import PeftConfig, LoraConfig, LoraModel, get_peft_model, TaskType #, prepare_model_for_kbit_training, PeftModel
@@ -144,7 +144,6 @@ class DL_LoRA:
         rel_path = "gpt_finetune.yml"
         config_path = rel_path 
         opt = option.parse(config_path, is_train=True)
-
         trainer = Trainer()
         trainer.rank = -1
 
@@ -169,12 +168,12 @@ class DL_LoRA:
         mode = ""
         trainer.init(config_path, opt, launcher, mode)
         # Create a dictionary from the base model's state dictionary
-        #base_state_dict = dict(unified_voice.gpt.state_dict().items()) #dict(
-
+        # base_state_dict = dict(unified_voice.gpt.state_dict().items()) #dict(
+        
         l_config = LoraConfig(
-            r = 16,
-            lora_alpha = 32,
-            lora_dropout = .05,
+            r = 512,
+            lora_alpha = 128,
+            lora_dropout = .005,
             task_type = TaskType.CAUSAL_LM,
             target_modules = [
                 "c_attn","c_proj","c_fc",
@@ -182,45 +181,40 @@ class DL_LoRA:
             modules_to_save=["lm_head"],
         )
 
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True,
-        )   
+        #bnb_config = BitsAndBytesConfig(
+        #    load_in_4bit=True,
+        #    bnb_4bit_compute_dtype=torch.float16,
+        #    bnb_4bit_use_double_quant=True,
+        #)   
 
         # Load the Lora model
-
+    
         unified_voice = trainer.model.networks["gpt"].module
         gpt_model = unified_voice.gpt
         gpt_model.wte = unified_voice.text_embedding
         gpt_model.wpe = functools.partial(self.null_position_embeddings, dim=1024)
         gpt_model =  self.freeze_weights(gpt_model)
         
-        gpt_model = get_peft_model(gpt_model, l_config)
+        #gpt_model = get_peft_model(gpt_model, l_config)
         print(gpt_model)
-        gpt_model = self.accelerator.prepare(gpt_model)  # Wrap with Accelerate for distributed training
-        gpt_model.print_trainable_parameters()
+        #gpt_model = self.accelerator.prepare(gpt_model)  # Wrap with Accelerate for distributed training
+        #gpt_model.print_trainable_parameters()
         gpt_model.config.use_cache = False
-        del gpt_model.base_model.model.wte
+        del gpt_model.wte
+        #del gpt_model.base_model.model.wte
+       
         trainer.do_training()
-        gpt_model.save_pretrained("./tortoise_mod")
-        trainer.model.save(10)# n_iter in gpt_finetune.yml default is 10000
-        #trainer.model.networks["gpt"].module.gpt.save_model("./adapters")
+        #gpt_model = trainer.model.networks["gpt"].module.gpt
+        gpt_model.save_pretrained("./tortoise_mod/noPeft")
+        trainer.model.save(500)# n_iter in gpt_finetune.yml default is 10000   
 
-        #from safetensors.torch import load_model, save_model
-
-        #save_model(trainer.model, "model.safetensors")
-        #save_model(trainer.model.networks["gpt"].module.gpt, "model_weight.safetensors")
-
-        #lora_weights = {}
-        #for key, value in trainer.model.networks["gpt"].module.gpt.state_dict().items():
-        #    if "c_attn" in key or "c_proj" in key or "c_fc" in key:
-        #        lora_weights[key] = value
-
-        # Save the LoRA weights to a safetensor file
-        #torch.save(lora_weights, "model_weight_ft.safetensors")
-        
-
+        # trainer.model.load(count)
+        # count+=10
+        # count = 10
+                # while(count<220):
+                #    print("\n")
+                #    print(count)
+                #    print("\n")
 
 #generate peft
 def main():

@@ -7,7 +7,7 @@ gpu_ids: [0] # Manually edit this if the GPU you want to train on is not your pr
 start_step: 0
 checkpointing_enabled: true
 fp16: False
-bitsandbytes: True
+bitsandbytes: False
 gpus: 1
 
 datasets:
@@ -121,7 +121,7 @@ path:
   # resume_state: ''
 
 train:
-  niter: 500 #10000
+  niter: 99 #10000
   warmup_iter: -1
   mega_batch_factor: 4
   val_freq: 100
@@ -138,7 +138,7 @@ eval:
   output_state: gen
 
 logger:
-  save_checkpoint_freq: 100
+  save_checkpoint_freq: 10
   visuals: [gen, mel]
   visual_debug_rate: 100
   is_mel_spectrogram: true
